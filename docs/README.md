@@ -30,7 +30,7 @@ Ensure you have Go installed (v1.26.1+ recommended for optimal performance).
 Clone the repository and compile the highly-optimized binary:
 
 ```bash
-git clone [https://github.com/Beatrix-labs/argus.git](https://github.com/Beatrix-labs/argus.git)
+git clone https://github.com/Beatrix-labs/argus.git
 cd argus
 go build -ldflags="-s -w" -o argus cmd/argus/main.go
 ```
