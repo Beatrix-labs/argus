@@ -1,4 +1,0 @@
-nohup: ignoring input
-[*] Argus IDS engine initialized successfully.
-[*] Signature & Behavioral modules active.
-2026/03/23 13:57:15 [!] Fatal error opening log file: open /var/log/nginx/access.log: no such file or directory
