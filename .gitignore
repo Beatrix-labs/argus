@@ -1,0 +1,11 @@
+# Binaries
+argus
+*.exe
+*.bin
+
+# Logs & Test Data
+testdata/access.log
+banned_ips.txt
+
+# OS Junk
+.DS_Store
