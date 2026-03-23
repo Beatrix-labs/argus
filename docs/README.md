@@ -24,30 +24,52 @@ Argus operates by reading standard access logs (e.g., Nginx, Apache). The pipeli
 
 ## Installation
 
-Ensure you have Go installed (1.20+ recommended). 
+Ensure you have Go installed (v1.26.1+ recommended for optimal performance).
 
-Clone the repository and build the binary:
+### Building from Source
+Clone the repository and compile the highly-optimized binary:
 
 ```bash
-git clone https://github.com/Beatrix-labs/argus.git
+git clone [https://github.com/Beatrix-labs/argus.git](https://github.com/Beatrix-labs/argus.git)
 cd argus
-go build -o argus cmd/argus/main.go
+go build -ldflags="-s -w" -o argus cmd/argus/main.go
+```
+
+### Deployment via Docker
+
+For production environments, use the provided multi-stage Dockerfile:
+
+```bash
+docker build -t beatrix/argus:v0.1.0 .
+docker run -v /var/log/nginx:/logs beatrix/argus:v0.1.0 -file /logs/access.log
 ```
 
 ## Usage
 
-Argus can read from a static log file or process real-time streams via standard input (stdin).
+Argus is designed for flexibility, supporting both static analysis and real-time log tailing.
 
-**Analyze a static file:**
+### 1. Direct Execution
+
+Analyze a specific log file locally:
 
 ```bash
-./argus -file /var/log/nginx/access.log
+./argus -file testdata/access.log
 ```
 
-**Analyze a real-time stream (Piping):**
+### 2. Pipeline (Real-time Monitoring)
+
+Pipe your live web server logs directly into Argus for instant threat detection:
 
 ```bash
 tail -f /var/log/nginx/access.log | ./argus
+```
+
+### 3. Background Service (Systemd)
+
+In a real server setup, you can run Argus as a system service to ensure 24/7 monitoring.
+
+```bash
+nohup ./argus -file /var/log/nginx/access.log >> argus.log 2>&1 &
 ```
 
 ## Configuration
