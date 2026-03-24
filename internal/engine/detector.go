@@ -1,7 +1,11 @@
 package engine
 
 import (
+	"encoding/json"
+	"fmt"
 	"net/url"
+	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 
@@ -18,44 +22,12 @@ const (
 
 // Rule represents a single attack signature/pattern.
 type Rule struct {
-	Name        string
-	Description string
-	Severity    string // "Low", "Medium", "High", "Critical"
-	Pattern     *regexp.Regexp
-	Target      TargetField
-}
-
-// DefaultRules contains highly optimized, industry-standard threat signatures.
-// Note: HPP detection is removed from Regex and moved to Native code for ReDoS protection!
-var DefaultRules = []Rule{
-	{
-		Name:        "Cross_Site_Scripting_XSS",
-		Description: "Detects XSS payload injections (scripts, event handlers)",
-		Severity:    "High",
-		Pattern:     regexp.MustCompile(`(?i)(<script>|<\/script>|on(load|error|mouseover|click|focus)=|javascript:)`),
-		Target:      TargetPath,
-	},
-	{
-		Name:        "SQL_Injection",
-		Description: "Detects common SQL injection syntax and boolean-based payloads",
-		Severity:    "Critical",
-		Pattern:     regexp.MustCompile(`(?i)(UNION\s+SELECT|SELECT\s+.*\s+FROM|INSERT\s+INTO|UPDATE\s+.*\s+SET|' OR '1'='1|--\s*$)`),
-		Target:      TargetPath,
-	},
-	{
-		Name:        "Local_File_Inclusion",
-		Description: "Detects Path Traversal / Directory climbing attempts",
-		Severity:    "Critical",
-		Pattern:     regexp.MustCompile(`(?i)(\.\./\.\./|\.\.%2F|/etc/passwd|/windows/win\.ini|cmd\.exe)`),
-		Target:      TargetPath,
-	},
-	{
-		Name:        "Malicious_Scanner_Bot",
-		Description: "Detects automated vulnerability scanners in the User-Agent header",
-		Severity:    "Low",
-		Pattern:     regexp.MustCompile(`(?i)(sqlmap|nikto|nmap|zgrab|masscan|dirb|gobuster)`),
-		Target:      TargetUserAgent,
-	},
+	Name        string      `json:"name"`
+	Description string      `json:"description"`
+	Severity    string      `json:"severity"`
+	PatternStr  string      `json:"pattern"` // Raw string from JSON
+	Target      TargetField `json:"target"`
+	Pattern     *regexp.Regexp // Compiled at runtime (Anti-bloat)
 }
 
 // Detector is the core engine struct that holds loaded rules.
@@ -63,29 +35,68 @@ type Detector struct {
 	rules []Rule
 }
 
-// NewDetector initializes a new Detection Engine.
-func NewDetector(customRules []Rule) *Detector {
-	if len(customRules) == 0 {
-		customRules = DefaultRules
+func LoadRules(dir string) ([]Rule, error) {
+	var compiledRules []Rule
+
+
+	files, err := os.ReadDir(dir)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read rules folder %w", err)
 	}
+
+	for _, file := range files {
+		if filepath.Ext(file.Name()) == ".json" {
+			path := filepath.Join(dir, file.Name())
+			bytes, err := os.ReadFile(path)
+			if err != nil {
+				fmt.Printf("[!] Warning: Unable to read rule file %s\n", file.Name())
+				continue
+			}
+
+			var fileRules []Rule
+			if err := json.Unmarshal(bytes, &fileRules); err != nil {
+				fmt.Printf("[!] Warning: JSON format is corrupted in the file %s: %v\n", file.Name(), err)
+				continue
+			}
+
+			for _, r := range fileRules {
+				compiled, err := regexp.Compile(r.PatternStr)
+				if err != nil {
+					fmt.Printf("[!] Warning: Regex error in rule '%s', this rule is skipped!\n", r.Name)
+					continue
+				}
+				r.Pattern = compiled
+				compiledRules = append(compiledRules, r)
+			}
+		}
+	}
+
+	if len(compiledRules) == 0 {
+		return nil, fmt.Errorf("no valid rules found in folder %s", dir)
+	}
+
+	fmt.Printf("[*] Argus Engine: Successfully loaded %d rules from %s\n", len(compiledRules), dir)
+	return compiledRules, nil
+}
+
+// NewDetector initializes a new Detection Engine with loaded rules.
+func NewDetector(loadedRules []Rule) *Detector {
 	return &Detector{
-		rules: customRules,
+		rules: loadedRules,
 	}
 }
 
-// Analyze inspects a single LogEvent against native checks and regex rules.
+// Analyze inspects a single LogEvent against native checks and dynamic regex rules.
 func (d *Detector) Analyze(event models.LogEvent) *models.Alert {
 	if event.Path == "" || event.Path == "/" {
 		return nil
 	}
 
-	// NATIVE HPP DETECTION (Zero ReDoS Risk)	// Instead of using dangerous backreference Regex, we use Go's native URL parser.
-	// It parses the path and checks if any query parameter key appears more than once.
+	// NATIVE HPP DETECTION (Zero ReDoS Risk)
 	parsedURL, err := url.ParseRequestURI(event.Path)
 	if err == nil {
 		queryParams := parsedURL.Query()
 		for _, values := range queryParams {
-			// If a single parameter key has multiple values, it's an HPP attack!
 			if len(values) > 1 {
 				return &models.Alert{
 					Event:       event,

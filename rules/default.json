@@ -1,0 +1,30 @@
+[
+  {
+    "name": "Cross_Site_Scripting_XSS",
+    "description": "Detects XSS payload injections (scripts, event handlers)",
+    "severity": "High",
+    "pattern": "(?i)(<script>|<\\/script>|on(load|error|mouseover|click|focus)=|javascript:)",
+    "target": "PATH"
+  },
+  {
+    "name": "SQL_Injection",
+    "description": "Detects common SQL injection syntax and boolean-based payloads",
+    "severity": "Critical",
+    "pattern": "(?i)(UNION\\s+SELECT|SELECT\\s+.*\\s+FROM|INSERT\\s+INTO|UPDATE\\s+.*\\s+SET|' OR '1'='1|--\\s*$)",
+    "target": "PATH"
+  },
+  {
+    "name": "Local_File_Inclusion",
+    "description": "Detects Path Traversal / Directory climbing attempts",
+    "severity": "Critical",
+    "pattern": "(?i)(\\.\\./\\.\\./|\\.\\.%2F|/etc/passwd|/windows/win\\.ini|cmd\\.exe)",
+    "target": "PATH"
+  },
+  {
+    "name": "Malicious_Scanner_Bot",
+    "description": "Detects automated vulnerability scanners in the User-Agent header",
+    "severity": "Low",
+    "pattern": "(?i)(sqlmap|nikto|nmap|zgrab|masscan|dirb|gobuster)",
+    "target": "USER_AGENT"
+  }
+]
