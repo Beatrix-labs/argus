@@ -8,6 +8,7 @@ import (
 	"os"
 	"time"
 
+	"github.com/Beatrix-labs/argus/internal/config"
 	"github.com/Beatrix-labs/argus/internal/engine"
 )
 
@@ -18,18 +19,44 @@ func main() {
 	logFilePath := flag.String("file", "", "Path to the log file to analyze (leave empty to read from stdin)")
 	flag.Parse()
 
-	// Initialize the Detection Engine with default, highly-optimized rules.
-	detector := engine.NewDetector(nil)
-	behaviorTracker := engine.NewBehaviorTracker(5, 1*time.Minute)
-	fmt.Println("[*] Argus IDS engine initialized successfully.")
-	fmt.Println("[*] Signature & Behavioral modules active.")
+	// ---------------------------------------------------------
+	// CONFIGURATION LOADING
+	// ---------------------------------------------------------
+	cfg, err := config.LoadConfig("configs/argus.yml")
+	
+	// Set default values in case config loading fails
+	errorThreshold := 5
+	windowDuration := 1 * time.Minute
 
-	// Determine the input source: a static file or standard input (pipe).
+	if err != nil {
+		fmt.Printf("[!] Warning: Could not load config file, using defaults: %v\n", err)
+	} else {
+		fmt.Println("[*] Argus Config loaded successfully!")
+		// Override defaults with values from argus.yml
+		if cfg.Engine.Behavioral.ErrorThreshold > 0 {
+			errorThreshold = cfg.Engine.Behavioral.ErrorThreshold
+		}
+		if cfg.Engine.Behavioral.WindowSeconds > 0 {
+			windowDuration = time.Duration(cfg.Engine.Behavioral.WindowSeconds) * time.Second
+		}
+	}
+
+	// ---------------------------------------------------------
+	// ENGINE INITIALIZATION
+	// ---------------------------------------------------------
+	detector := engine.NewDetector(nil) // Future: Pass cfg.Engine.Signature here
+	behaviorTracker := engine.NewBehaviorTracker(errorThreshold, windowDuration)
+
+	fmt.Println("[*] Argus IDS engine initialized successfully.")
+	fmt.Printf("[*] Behavioral thresholds: %d errors / %v\n", errorThreshold, windowDuration)
+	fmt.Println("[*] Signature modules active.")
+
+	// ---------------------------------------------------------
+	// INPUT ROUTING
+	// ---------------------------------------------------------
 	var input *os.File
-	var err error
 
 	if *logFilePath != "" {
-		// Open the file in read-only mode for safety and performance.
 		input, err = os.Open(*logFilePath)
 		if err != nil {
 			log.Fatalf("[!] Fatal error opening log file: %v\n", err)
@@ -37,46 +64,43 @@ func main() {
 		defer input.Close()
 		fmt.Printf("[*] Analyzing log file: %s\n", *logFilePath)
 	} else {
-		// Fallback to standard input. This allows piping logs directly from tools like 'tail -f'.
-		// Example: tail -f /var/log/nginx/access.log | ./argus
+		// Fallback to standard input for piping logs (e.g., tail -f)
 		input = os.Stdin
 		fmt.Println("[*] Listening on standard input (stdin)...")
 	}
 
 	fmt.Println("[*] Waiting for log data...\n--------------------------------------------------")
 
-	// Use bufio.Scanner for high-performance, line-by-line reading with minimal memory footprint.
+	// ---------------------------------------------------------
+	// PIPELINE EXECUTION
+	// ---------------------------------------------------------
 	scanner := bufio.NewScanner(input)
-
-	// Security/Stability Measure: Increase the scanner buffer size to 1MB.
-	// This prevents the scanner from crashing if an attacker sends an abnormally long URL payload.
+	
+	// Security Measure: 1MB buffer to prevent crashes from massive URLs
 	buf := make([]byte, 0, 64*1024)
-	scanner.Buffer(buf, 1024*1024) 
+	scanner.Buffer(buf, 1024*1024)
 
 	var linesProcessed uint64
 
-	// The core processing loop - engineered to be extremely fast.
 	for scanner.Scan() {
 		linesProcessed++
 		rawLine := scanner.Text()
 
-		// Step 1: Parse the raw text into a structured LogEvent.
 		event, err := engine.ParseLogLine(rawLine)
 		if err != nil {
-			// Skip unrecognized log formats silently to maintain high processing throughput.
-			continue
+			continue // Skip unrecognized formats silently
 		}
 
-		// Step 2: Feed the structured event to the Detection Engine.
+		// Phase 1: Signature Analysis
 		alert := detector.Analyze(event)
 
+		// Phase 2: Behavioral Analysis (if no signature match)
 		if alert == nil {
 			alert = behaviorTracker.Analyze(event)
 		}
 
+		// Phase 3: Action / Alert
 		if alert != nil {
-			// Threat detected! Print a detailed alert to the console.
-			// In a full production setup, this could trigger a webhook to Telegram or Phalanx (IPS).
 			fmt.Printf("[!] THREAT DETECTED: %s\n", alert.RuleName)
 			fmt.Printf("    Severity: %s\n", alert.Severity)
 			fmt.Printf("    Target IP: %s\n", alert.Event.IP)
@@ -86,7 +110,6 @@ func main() {
 		}
 	}
 
-	// Handle potential scanner errors gracefully.
 	if err := scanner.Err(); err != nil {
 		log.Fatalf("[!] Error reading input stream: %v\n", err)
 	}

@@ -1,0 +1,42 @@
+# Argus IDS/IPS Configuration File
+# Project: Beatrix-labs
+
+global:
+  app_name: "Argus"
+  environment: "production"
+  log_level: "info"
+
+# Input Log Configuration
+log_source:
+  path: "/var/log/nginx/access.log"
+  format: "combined" # Options: combined, common, json
+  real_time: true
+
+# Detection Engine Thresholds
+engine:
+  behavioral:
+    # Max allowed errors (4xx/5xx) before blacklisting
+    error_threshold: 5
+    # Time window in seconds to track behaviors
+    window_seconds: 60
+  
+  signature:
+    # Enable/Disable specific detection modules
+    enable_sqli: true
+    enable_xss: true
+    enable_lfi: true
+    enable_hpp: true
+
+# Remediation / IPS Settings
+action:
+  # Path to store banned IP addresses
+  ban_file: "banned_ips.txt"
+  # Duration for a temporary ban (in minutes). Set 0 for permanent.
+  ban_duration: 60
+  # Enable automatic notification (to be implemented)
+  enable_alerts: false
+
+# Vanguard Integration (Upcoming)
+vanguard:
+  api_endpoint: "http://localhost:8080"
+  secret_key: "change-this-to-a-secure-token"
