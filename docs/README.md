@@ -41,7 +41,7 @@ Argus requires Go v1.20 or higher.
 Clone the repository and compile the optimized binary:
 
 ```bash
-git clone [https://github.com/Beatrix-labs/argus.git](https://github.com/Beatrix-labs/argus.git)
+git clone https://github.com/Beatrix-labs/argus.git
 cd argus
 go build -ldflags="-s -w" -o argus cmd/argus/main.go
 ```
