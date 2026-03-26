@@ -46,7 +46,7 @@ func (l *JSONLogger) LogAlert(alert *models.Alert) error {
 
 	// Move data from Argus Alert to SIEM Alert format
 	jsonAlert := SIEMAlert{
-		Timestamp:   time.Now(),
+		Timestamp:   alert.Event.Timestamp,
 		RuleName:    alert.RuleName,
 		Severity:    alert.Severity,
 		TargetIP:    alert.Event.IP,

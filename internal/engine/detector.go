@@ -93,7 +93,8 @@ func (d *Detector) Analyze(event models.LogEvent) *models.Alert {
 	}
 
 	// NATIVE HPP DETECTION (Zero ReDoS Risk)
-	parsedURL, err := url.ParseRequestURI(event.Path)
+	// Use url.Parse instead of ParseRequestURI to handle partial paths from logs
+	parsedURL, err := url.Parse(event.Path)
 	if err == nil {
 		queryParams := parsedURL.Query()
 		for _, values := range queryParams {
@@ -108,10 +109,13 @@ func (d *Detector) Analyze(event models.LogEvent) *models.Alert {
 		}
 	}
 
-	// URL DECODING & REGEX ENGINE
-	decodedPath, err := url.QueryUnescape(event.Path)
-	if err != nil {
-		decodedPath = event.Path
+	// LAZY URL DECODING & REGEX ENGINE
+	// Avoid expensive QueryUnescape if there's no '%' in the path
+	decodedPath := event.Path
+	if strings.Contains(event.Path, "%") {
+		if decoded, err := url.QueryUnescape(event.Path); err == nil {
+			decodedPath = decoded
+		}
 	}
 
 	for _, rule := range d.rules {

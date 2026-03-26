@@ -14,27 +14,21 @@ type IPStats struct {
 }
 
 // BehaviorTracker is a stateful engine that monitors IP behavior over time.
-// It uses a RWMutex to ensure blazing fast, thread-safe concurrent map access.
 type BehaviorTracker struct {
 	mu          sync.RWMutex
 	ipData      map[string]*IPStats
 	threshold   int           // How many errors before alerting
 	timeWindow  time.Duration // How long to remember the errors
+	lastCleanup time.Time     // Last time we performed a bulk cleanup
 }
 
-// NewBehaviorTracker initializes the tracker and starts a background Goroutine
-// to clean up stale IP data, preventing memory leaks in production environments.
+// NewBehaviorTracker initializes the tracker.
 func NewBehaviorTracker(threshold int, window time.Duration) *BehaviorTracker {
-	bt := &BehaviorTracker{
+	return &BehaviorTracker{
 		ipData:     make(map[string]*IPStats),
 		threshold:  threshold,
 		timeWindow: window,
 	}
-
-	// Start the background sweeper (Classic Senior Go pattern)
-	go bt.startSweeper()
-
-	return bt
 }
 
 // Analyze evaluates if an IP is exhibiting malicious behavior (e.g., Fuzzing/Bruteforce)
@@ -47,6 +41,12 @@ func (bt *BehaviorTracker) Analyze(event models.LogEvent) *models.Alert {
 	bt.mu.Lock()
 	defer bt.mu.Unlock()
 
+	// Periodic lazy cleanup based on log timestamps (every 1000 events or 10 min log-time)
+	if event.Timestamp.Sub(bt.lastCleanup) > bt.timeWindow || bt.lastCleanup.IsZero() {
+		bt.cleanup(event.Timestamp)
+		bt.lastCleanup = event.Timestamp
+	}
+
 	stats, exists := bt.ipData[event.IP]
 	if !exists {
 		bt.ipData[event.IP] = &IPStats{
@@ -56,7 +56,7 @@ func (bt *BehaviorTracker) Analyze(event models.LogEvent) *models.Alert {
 		return nil
 	}
 
-	// Reset counter if the time window has passed
+	// Reset counter if the time window has passed (based on log time)
 	if event.Timestamp.Sub(stats.LastSeen) > bt.timeWindow {
 		stats.ErrorCount = 1
 	} else {
@@ -81,17 +81,11 @@ func (bt *BehaviorTracker) Analyze(event models.LogEvent) *models.Alert {
 	return nil
 }
 
-// startSweeper runs periodically to delete inactive IPs from RAM.
-func (bt *BehaviorTracker) startSweeper() {
-	ticker := time.NewTicker(bt.timeWindow)
-	for range ticker.C {
-		bt.mu.Lock()
-		now := time.Now()
-		for ip, stats := range bt.ipData {
-			if now.Sub(stats.LastSeen) > bt.timeWindow {
-				delete(bt.ipData, ip)
-			}
+// cleanup removes stale IP data based on the provided current time (usually from logs).
+func (bt *BehaviorTracker) cleanup(now time.Time) {
+	for ip, stats := range bt.ipData {
+		if now.Sub(stats.LastSeen) > bt.timeWindow {
+			delete(bt.ipData, ip)
 		}
-		bt.mu.Unlock()
 	}
 }

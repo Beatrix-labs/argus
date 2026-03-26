@@ -7,10 +7,11 @@ Developed as a core component of the Beatrix-labs security ecosystem, Argus oper
 ## Core Capabilities
 
 ### Threat Detection Engine
+* **Parallel Processing Pipeline**: Implemented a high-performance worker pool that utilizes Go routines to process logs in parallel, significantly increasing throughput on multi-core systems.
 * **Dynamic Rule Engine**: Supports hot-reloadable threat signatures via JSON files. Deploy zero-day mitigation rules instantly without recompiling the binary.
 * **Multi-Target Analysis**: Signature rules can be specifically mapped to scan either the HTTP `PATH` or the `USER_AGENT` header.
 * **Zero-ReDoS HPP Detection**: Utilizes Go's native URL parsing logic to detect HTTP Parameter Pollution, completely eliminating the risk of Regular Expression Denial of Service (ReDoS).
-* **Stateful Behavioral Analysis**: Tracks IP behavior across configurable time windows to detect directory fuzzing, enumeration, and brute-force attempts.
+* **Stateful Behavioral Analysis**: Tracks IP behavior across configurable time windows using log-based timestamps, supporting both real-time and historical/offline log analysis.
 
 ### Remediation & Enterprise Integration
 * **Automated IPS (Bouncer)**: Safely blacklists malicious IPs in real-time. Utilizes an O(1) in-memory cache and `sync.RWMutex` to prevent disk I/O bottlenecks during volumetric attacks.
@@ -19,17 +20,17 @@ Developed as a core component of the Beatrix-labs security ecosystem, Argus oper
 
 ### Architecture & Safety
 * **High-Throughput Parsing**: Employs zero-allocation extraction techniques and compiled regular expressions to process massive log files continuously.
-* **Memory Leak Prevention**: Features a background garbage-collection routine (Sweeper) that periodically clears inactive IP states from RAM.
+* **Lazy URL Decoding**: Optimized CPU usage by performing URL decoding only when necessary (e.g., when percent symbols are detected in the path).
 * **Large Payload Protection**: Implements a customized 1MB buffer scanner to safely process massive, obfuscated URLs without causing runtime panics.
 * **Centralized YAML Configuration**: Separates environmental configuration from the core binary using standardized YAML formats.
 
 ## System Pipeline
 
-Argus analyzes standard access logs (e.g., Nginx, Apache) through a highly optimized pipeline:
-1. **Ingestion**: Reads logs line-by-line using customized buffered I/O.
+Argus analyzes standard access logs (e.g., Nginx, Apache) through a highly optimized parallel pipeline:
+1. **Ingestion**: Reads logs using customized buffered I/O and distributes them across a worker pool.
 2. **Extraction**: Parses essential metadata (IP, Method, Path, Status Code, User-Agent).
 3. **Signature Phase**: Evaluates payloads against dynamic JSON threat matrices and native application logic.
-4. **Behavioral Phase**: Maintains an in-memory, thread-safe state of client error rates (4xx/5xx).
+4. **Behavioral Phase**: Maintains an in-memory, thread-safe state of client error rates (4xx/5xx) synchronized with log timestamps.
 5. **Action Phase**: Dispatches structured JSON alerts and executes automatic IP bans.
 
 ## Installation
@@ -51,7 +52,7 @@ go build -ldflags="-s -w" -o argus cmd/argus/main.go
 For production environments, utilize the provided multi-stage Docker setup. Map the necessary volumes for logs, configurations, and rules.
 
 ```bash
-docker build -t beatrix/argus:v0.2.0 .
+docker build -t beatrix/argus:v0.4.0 .
 
 docker run -d \
   --name argus-ips \
@@ -59,7 +60,7 @@ docker run -d \
   -v $(pwd)/rules:/app/rules \
   -v $(pwd)/configs:/app/configs \
   -v $(pwd)/reports:/app/reports \
-  beatrix/argus:v0.2.0 \
+  beatrix/argus:v0.4.0 \
   -file /logs/access.log -rules /app/rules -json /app/reports/alerts.json
 ```
 
@@ -72,6 +73,7 @@ Argus provides a flexible CLI, supporting both static log analysis and real-time
 - `-file`: Path to the web server access log. Leave empty to read from `stdin`.
 - `-rules`: Directory containing the JSON signature rules (default: `rules`).
 - `-json`: Output path for the SIEM-compatible JSON alerts (default: `argus_alerts.json`).
+- `-workers`: Number of parallel workers for processing (default: CPU count).
 
 ### Real-time Monitoring (Pipeline)
 

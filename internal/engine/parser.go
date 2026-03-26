@@ -2,6 +2,7 @@ package engine
 
 import (
 	"errors"
+	"fmt"
 	"regexp"
 	"strconv"
 	"strings"
@@ -28,7 +29,7 @@ func ParseLogLine(rawLine string) (models.LogEvent, error) {
 
 	parsedTime, err := time.Parse("02/Jan/2006:15:04:05 -0700", matches[2])
 	if err != nil {
-		parsedTime = time.Now()
+		return models.LogEvent{}, fmt.Errorf("failed to parse timestamp: %w", err)
 	}
 
 	statusCode, _ := strconv.Atoi(matches[5])
