@@ -1,10 +1,14 @@
 # Binaries
+argus
 *.exe
 *.bin
 
 # Logs & Test Data
 testdata/access.log
 banned_ips.txt
+argus_alerts.json
+test_access.log
+*.log
 
 # OS Junk
 .DS_Store

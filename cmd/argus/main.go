@@ -4,10 +4,15 @@ import (
 	"bufio"
 	"flag"
 	"fmt"
+	"io"
 	"log"
 	"os"
+	"os/signal"
+	"regexp"
 	"runtime"
 	"sync"
+	"sync/atomic"
+	"syscall"
 	"time"
 
 	"github.com/Beatrix-labs/argus/internal/config"
@@ -27,6 +32,8 @@ func main() {
 	rulesDirPath := flag.String("rules", "rules", "Path to the directory containing JSON rules")
 	jsonOutPath := flag.String("json", "argus_alerts.json", "Path to save JSON alerts for SIEM")
 	workers := flag.Int("workers", runtime.NumCPU(), "Number of parallel workers for processing")
+	dryRun := flag.Bool("dry-run", false, "Simulate blocking without executing firewall commands")
+	tailMode := flag.Bool("tail", false, "Continuously tail the log file (requires -file)")
 	flag.Parse()
 
 	// 1. CONFIGURATION
@@ -35,6 +42,16 @@ func main() {
 	errorThreshold := defaultErrorThreshold
 	windowDuration := defaultWindowDuration
 	banFilePath := "banned_ips.txt"
+
+	// Scoring defaults
+	scoreThreshold := 10
+	scoreWindow := 60 * time.Second
+	wSQLi, wBrute, wPathTrav := 5, 2, 4
+	ttl1, ttl2 := 60, 1440
+	useIPTables := true
+	var whitelist []string
+	var scoreFile string
+	var customRegex *regexp.Regexp
 
 	if err != nil {
 		fmt.Printf("[!] Warning: Could not load config file, using defaults: %v\n", err)
@@ -49,6 +66,43 @@ func main() {
 		if cfg.Action.BanFile != "" {
 			banFilePath = cfg.Action.BanFile
 		}
+		if cfg.Engine.Scoring.Threshold > 0 {
+			scoreThreshold = cfg.Engine.Scoring.Threshold
+		}
+		if cfg.Engine.Scoring.WindowSeconds > 0 {
+			scoreWindow = time.Duration(cfg.Engine.Scoring.WindowSeconds) * time.Second
+		}
+		if cfg.Engine.Scoring.WeightSQLi > 0 {
+			wSQLi = cfg.Engine.Scoring.WeightSQLi
+		}
+		if cfg.Engine.Scoring.WeightBrute > 0 {
+			wBrute = cfg.Engine.Scoring.WeightBrute
+		}
+		if cfg.Engine.Scoring.WeightPathTrav > 0 {
+			wPathTrav = cfg.Engine.Scoring.WeightPathTrav
+		}
+		if cfg.Action.TTLLevel1 > 0 {
+			ttl1 = cfg.Action.TTLLevel1
+		}
+		if cfg.Action.TTLLevel2 > 0 {
+			ttl2 = cfg.Action.TTLLevel2
+		}
+		if cfg.Action.UseIPTables {
+			useIPTables = true
+		} else {
+			useIPTables = false
+		}
+		if cfg.Action.DryRun {
+			*dryRun = true
+		}
+		whitelist = cfg.Engine.Scoring.Whitelist
+		scoreFile = cfg.Engine.Scoring.ScoreFile
+		if cfg.LogSource.CustomLogRegex != "" {
+			customRegex, err = regexp.Compile(cfg.LogSource.CustomLogRegex)
+			if err != nil {
+				fmt.Printf("[!] Warning: Invalid custom log regex: %v. Using default.\n", err)
+			}
+		}
 	}
 
 	// 2. RULES
@@ -60,6 +114,7 @@ func main() {
 	// 3. ENGINES
 	detector := engine.NewDetector(loadedRules) 
 	behaviorTracker := engine.NewBehaviorTracker(errorThreshold, windowDuration)
+	scoringEngine := engine.NewScoringEngine(scoreThreshold, scoreWindow, wSQLi, wBrute, wPathTrav, scoreFile, whitelist)
 	
 	jsonLogger, err := output.NewJSONLogger(*jsonOutPath)
 	if err == nil {
@@ -67,24 +122,45 @@ func main() {
 		fmt.Printf("[*] JSON Logging: %s\n", *jsonOutPath)
 	}
 
-	ipsEngine, err := remediation.NewBanner(banFilePath)
-	if err == nil {
-		fmt.Printf("[*] IPS Engine: %s\n", banFilePath)
+	ipsEngine, err := remediation.NewBanner(banFilePath, *dryRun, useIPTables, ttl1, ttl2, whitelist)
+	if err != nil {
+		fmt.Printf("[!] Warning: IPS Engine failed to initialize: %v\n", err)
+	} else {
+		defer ipsEngine.Stop()
+		fmt.Printf("[*] IPS Engine Initialized (Dry-Run: %v, Mode: %s)\n", *dryRun, map[bool]string{true: "iptables", false: "nftables"}[useIPTables])
 	}
 
-	// 4. INPUT SOURCE
-	var input *os.File
+	// 4. REMEDIATION WORKER (Non-Blocking Queue)
+	remediationChan := make(chan string, 1000)
+	var remWg sync.WaitGroup
+	remWg.Add(1)
+	go func() {
+		defer remWg.Done()
+		for ip := range remediationChan {
+			if ipsEngine != nil {
+				_ = ipsEngine.BanIP(ip)
+			}
+		}
+	}()
+
+	// 5. INPUT SOURCE
+	var input io.Reader
 	if *logFilePath != "" {
-		input, err = os.Open(*logFilePath)
+		f, err := os.Open(*logFilePath)
 		if err != nil {
 			log.Fatalf("[!] Fatal: %v\n", err)
 		}
-		defer input.Close()
+		defer f.Close()
+		input = f
+		if *tailMode {
+			// Seek to end if tailing
+			_, _ = f.Seek(0, io.SeekEnd)
+		}
 	} else {
 		input = os.Stdin
 	}
 
-	// 5. PARALLEL PIPELINE
+	// 6. PARALLEL PIPELINE
 	fmt.Printf("[*] Initializing pipeline with %d workers...\n", *workers)
 	
 	linesChan := make(chan string, *workers*10)
@@ -98,7 +174,7 @@ func main() {
 		go func() {
 			defer wg.Done()
 			for rawLine := range linesChan {
-				event, err := engine.ParseLogLine(rawLine)
+				event, err := engine.ParseLogLine(rawLine, customRegex)
 				if err != nil {
 					continue 
 				}
@@ -110,51 +186,91 @@ func main() {
 				}
 
 				if alert != nil {
-					handleAlert(alert, jsonLogger, ipsEngine, &mu)
+					handleAlert(alert, jsonLogger, scoringEngine, remediationChan, &mu, scoreThreshold)
 				}
 			}
 		}()
 	}
 
+	// Handle Graceful Shutdown
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
+	
+	done := make(chan bool)
+	go func() {
+		<-sigChan
+		fmt.Println("\n[*] Shutting down gracefully...")
+		scoringEngine.SaveScores()
+		close(linesChan)
+		done <- true
+	}()
+
 	// Producer
-	scanner := bufio.NewScanner(input)
-	buf := make([]byte, 0, 64*1024)
-	scanner.Buffer(buf, 1024*1024)
-
 	start := time.Now()
-	for scanner.Scan() {
-		linesProcessed++
-		linesChan <- scanner.Text()
-	}
-	close(linesChan)
-	wg.Wait()
+	if *tailMode && *logFilePath != "" {
+		go func() {
+			reader := bufio.NewReader(input)
+			for {
+				line, err := reader.ReadString('\n')
+				if err != nil {
+					if err == io.EOF {
+						time.Sleep(500 * time.Millisecond)
+						continue
+					}
+					break
+				}
+				atomic.AddUint64(&linesProcessed, 1)
+				linesChan <- line
+			}
+		}()
+		<-done
+	} else {
+		scanner := bufio.NewScanner(input)
+		buf := make([]byte, 0, 64*1024)
+		scanner.Buffer(buf, 1024*1024)
 
-	if err := scanner.Err(); err != nil {
-		log.Printf("[!] Error reading input: %v\n", err)
+		for scanner.Scan() {
+			atomic.AddUint64(&linesProcessed, 1)
+			linesChan <- scanner.Text()
+		}
+		close(linesChan)
+		if err := scanner.Err(); err != nil {
+			log.Printf("[!] Error reading input: %v\n", err)
+		}
 	}
+
+	wg.Wait()
+	close(remediationChan)
+	remWg.Wait()
+	scoringEngine.SaveScores()
 
 	elapsed := time.Since(start)
 	fmt.Printf("\n[*] Analysis complete.\n")
-	fmt.Printf("    Lines processed: %d\n", linesProcessed)
+	fmt.Printf("    Lines processed: %d\n", atomic.LoadUint64(&linesProcessed))
 	fmt.Printf("    Time elapsed:    %v\n", elapsed)
 	if linesProcessed > 0 && elapsed > 0 {
 		fmt.Printf("    Throughput:      %.0f lines/sec\n", float64(linesProcessed)/elapsed.Seconds())
 	}
 }
 
-func handleAlert(alert *models.Alert, logger *output.JSONLogger, ips *remediation.Banner, mu *sync.Mutex) {
-	mu.Lock()
-	defer mu.Unlock()
+func handleAlert(alert *models.Alert, logger *output.JSONLogger, scoring *engine.ScoringEngine, remChan chan string, mu *sync.Mutex, threshold int) {
+	currentScore, triggered := scoring.AddScore(alert)
+	
+	action := "MONITORING"
+	if triggered {
+		action = "BANNED"
+	}
 
-	fmt.Printf("[!] THREAT: %s [%s] from %s on %s\n", alert.RuleName, alert.Severity, alert.Event.IP, alert.Event.Path)
+	mu.Lock()
+	fmt.Printf("[ALERT] [%s] [%s] - Score: %d/%d - ACTION: %s\n", 
+		alert.RuleName, alert.Event.IP, currentScore, threshold, action)
+	mu.Unlock()
 
 	if logger != nil {
 		_ = logger.LogAlert(alert)
 	}
 
-	if ips != nil {
-		if err := ips.BanIP(alert.Event.IP); err == nil {
-			// Only print ban message if it's a new ban (IPS handles internal check)
-		}
+	if triggered {
+		remChan <- alert.Event.IP
 	}
 }

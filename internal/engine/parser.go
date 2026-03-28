@@ -16,13 +16,18 @@ var (
 	ErrInvalidLog = errors.New("invalid or unmatched log format")
 )
 
-func ParseLogLine(rawLine string) (models.LogEvent, error) {
+func ParseLogLine(rawLine string, customRegex *regexp.Regexp) (models.LogEvent, error) {
 	rawLine = strings.TrimSpace(rawLine)
 	if rawLine == "" {
 		return models.LogEvent{}, ErrInvalidLog
 	}
 
-	matches := logRegex.FindStringSubmatch(rawLine)
+	activeRegex := logRegex
+	if customRegex != nil {
+		activeRegex = customRegex
+	}
+
+	matches := activeRegex.FindStringSubmatch(rawLine)
 	if len(matches) < 6 {
 		return models.LogEvent{}, ErrInvalidLog
 	}

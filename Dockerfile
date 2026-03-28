@@ -17,13 +17,16 @@ RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w" -o argus cmd/argus/main.g
 # Stage 2: Final lightweight image
 FROM alpine:latest
 
-# Install security certificates
-RUN apk --no-cache add ca-certificates
+# Install security certificates and firewall tools
+RUN apk --no-cache add ca-certificates iptables nftables sudo
 
 WORKDIR /root/
 
 # Copy only the compiled binary from the builder stage
 COPY --from=builder /app/argus .
+
+# Create dummy banned_ips.txt if not exists
+RUN touch banned_ips.txt
 
 # Set the entrypoint
 ENTRYPOINT ["./argus"]
