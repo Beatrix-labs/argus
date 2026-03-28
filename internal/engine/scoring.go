@@ -2,6 +2,7 @@ package engine
 
 import (
 	"encoding/json"
+	"net"
 	"os"
 	"sync"
 	"time"
@@ -24,29 +25,27 @@ type ScoringEngine struct {
 	weightPathTrav int
 	lastCleanup    time.Time
 	scoreFile      string
-	whitelist      map[string]bool
+	whitelistIPs   map[string]bool
+	whitelistNets  []*net.IPNet
 }
 
 func NewScoringEngine(threshold int, window time.Duration, wSQLi, wBrute, wPathTrav int, scoreFile string, whitelist []string) *ScoringEngine {
-	if threshold == 0 {
-		threshold = 10
-	}
-	if window == 0 {
-		window = 60 * time.Second
-	}
-	if wSQLi == 0 {
-		wSQLi = 5
-	}
-	if wBrute == 0 {
-		wBrute = 2
-	}
-	if wPathTrav == 0 {
-		wPathTrav = 4
-	}
+	// ... defaults logic ...
+	if threshold == 0 { threshold = 10 }
+	if window == 0 { window = 60 * time.Second }
+	if wSQLi == 0 { wSQLi = 5 }
+	if wBrute == 0 { wBrute = 2 }
+	if wPathTrav == 0 { wPathTrav = 4 }
 
-	wlMap := make(map[string]bool)
-	for _, ip := range whitelist {
-		wlMap[ip] = true
+	wlIPs := make(map[string]bool)
+	var wlNets []*net.IPNet
+
+	for _, entry := range whitelist {
+		if _, ipnet, err := net.ParseCIDR(entry); err == nil {
+			wlNets = append(wlNets, ipnet)
+		} else {
+			wlIPs[entry] = true
+		}
 	}
 
 	se := &ScoringEngine{
@@ -58,7 +57,8 @@ func NewScoringEngine(threshold int, window time.Duration, wSQLi, wBrute, wPathT
 		weightPathTrav: wPathTrav,
 		lastCleanup:    time.Now(),
 		scoreFile:      scoreFile,
-		whitelist:      wlMap,
+		whitelistIPs:   wlIPs,
+		whitelistNets:  wlNets,
 	}
 
 	if scoreFile != "" {
@@ -68,11 +68,27 @@ func NewScoringEngine(threshold int, window time.Duration, wSQLi, wBrute, wPathT
 	return se
 }
 
+func (se *ScoringEngine) isWhitelisted(ipStr string) bool {
+	if se.whitelistIPs[ipStr] {
+		return true
+	}
+	ip := net.ParseIP(ipStr)
+	if ip == nil {
+		return false
+	}
+	for _, ipnet := range se.whitelistNets {
+		if ipnet.Contains(ip) {
+			return true
+		}
+	}
+	return false
+}
+
 func (se *ScoringEngine) AddScore(alert *models.Alert) (int, bool) {
 	ip := alert.Event.IP
 
 	se.mu.RLock()
-	if se.whitelist[ip] {
+	if se.isWhitelisted(ip) {
 		se.mu.RUnlock()
 		return 0, false
 	}

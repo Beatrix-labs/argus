@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"fmt"
 	"log"
+	"net"
 	"os"
 	"os/exec"
 	"runtime"
@@ -28,33 +29,41 @@ type BanInfo struct {
 
 // Banner is an active IPS engine.
 type Banner struct {
-	filePath    string
-	dryRun      bool
-	useIPTables bool
-	mu          sync.RWMutex
-	bannedCache map[string]*BanInfo
-	ttlLevel1   time.Duration
-	ttlLevel2   time.Duration
-	stopChan    chan struct{}
-	whitelist   map[string]bool
+	filePath      string
+	dryRun        bool
+	useIPTables   bool
+	mu            sync.RWMutex
+	bannedCache   map[string]*BanInfo
+	ttlLevel1     time.Duration
+	ttlLevel2     time.Duration
+	stopChan      chan struct{}
+	whitelistIPs  map[string]bool
+	whitelistNets []*net.IPNet
 }
 
 // NewBanner initializes the IPS engine.
 func NewBanner(filePath string, dryRun bool, useIPTables bool, ttl1, ttl2 int, whitelist []string) (*Banner, error) {
-	wlMap := make(map[string]bool)
-	for _, ip := range whitelist {
-		wlMap[ip] = true
+	wlIPs := make(map[string]bool)
+	var wlNets []*net.IPNet
+
+	for _, entry := range whitelist {
+		if _, ipnet, err := net.ParseCIDR(entry); err == nil {
+			wlNets = append(wlNets, ipnet)
+		} else {
+			wlIPs[entry] = true
+		}
 	}
 
 	b := &Banner{
-		filePath:    filePath,
-		dryRun:      dryRun,
-		useIPTables: useIPTables,
-		bannedCache: make(map[string]*BanInfo),
-		ttlLevel1:   time.Duration(ttl1) * time.Minute,
-		ttlLevel2:   time.Duration(ttl2) * time.Minute,
-		stopChan:    make(chan struct{}),
-		whitelist:   wlMap,
+		filePath:      filePath,
+		dryRun:        dryRun,
+		useIPTables:   useIPTables,
+		bannedCache:   make(map[string]*BanInfo),
+		ttlLevel1:     time.Duration(ttl1) * time.Minute,
+		ttlLevel2:     time.Duration(ttl2) * time.Minute,
+		stopChan:      make(chan struct{}),
+		whitelistIPs:  wlIPs,
+		whitelistNets: wlNets,
 	}
 
 	if b.ttlLevel1 == 0 {
@@ -151,10 +160,26 @@ func (b *Banner) checkPermissions() error {
 	return nil
 }
 
+func (b *Banner) isWhitelisted(ipStr string) bool {
+	if b.whitelistIPs[ipStr] {
+		return true
+	}
+	ip := net.ParseIP(ipStr)
+	if ip == nil {
+		return false
+	}
+	for _, ipnet := range b.whitelistNets {
+		if ipnet.Contains(ip) {
+			return true
+		}
+	}
+	return false
+}
+
 // BanIP handles the blocking logic.
 func (b *Banner) BanIP(ip string) error {
 	b.mu.RLock()
-	if b.whitelist[ip] {
+	if b.isWhitelisted(ip) {
 		b.mu.RUnlock()
 		return nil
 	}
