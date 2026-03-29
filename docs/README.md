@@ -1,3 +1,5 @@
+> Project Status: Unmaintained/Archived. Feel free to fork and continue the development.
+
 # Argus v0.5.0 (Active IPS & Native Firewall Integration)
 
 Argus is a high-performance, concurrent, and stateful Intrusion Detection and Prevention System (IDS/IPS) engineered in Go. Designed to monitor web server access logs in real-time, Argus accurately detects known attack signatures and anomalous behavioral patterns with extremely low memory and CPU footprint.
